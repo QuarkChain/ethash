@@ -1,7 +1,6 @@
 #define PY_SSIZE_T_CLEAN
 
 #include <Python.h>
-#include <alloca.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
@@ -21,14 +20,13 @@
 static PyObject *
 mkcache_bytes(PyObject *self, PyObject *args) {
     unsigned long block_number;
-    unsigned long cache_size;
 
     if (!PyArg_ParseTuple(args, "k", &block_number))
         return 0;
 
     ethash_light_t L = ethash_light_new(block_number);
-    PyObject * val = Py_BuildValue(PY_STRING_FORMAT, L->cache, L->cache_size);
-    free(L->cache);
+    PyObject * val = Py_BuildValue(PY_STRING_FORMAT, L->cache, (Py_ssize_t)L->cache_size);
+    ethash_light_delete(L);
     return val;
 }
 
@@ -75,7 +73,7 @@ hashimoto_light(PyObject *self, PyObject *args) {
     char *header;
     unsigned long block_number;
     unsigned long long nonce;
-    int cache_size, header_size;
+    Py_ssize_t cache_size, header_size;
     if (!PyArg_ParseTuple(args, "k" PY_STRING_FORMAT PY_STRING_FORMAT "K", &block_number, &cache_bytes, &cache_size, &header, &header_size, &nonce))
         return 0;
     if (header_size != 32) {
@@ -87,15 +85,17 @@ hashimoto_light(PyObject *self, PyObject *args) {
     struct ethash_light *s;
     s = calloc(sizeof(*s), 1);
     s->cache = cache_bytes;
-    s->cache_size = cache_size;
+    s->cache_size = (uint64_t)cache_size;
     s->block_number = block_number;
     struct ethash_h256 *h;
     h = calloc(sizeof(*h), 1);
     for (int i = 0; i < 32; i++) h->b[i] = header[i];
     struct ethash_return_value out = ethash_light_compute(s, *h, nonce);
+    free(s);
+    free(h);
     return Py_BuildValue("{" PY_CONST_STRING_FORMAT ":" PY_STRING_FORMAT "," PY_CONST_STRING_FORMAT ":" PY_STRING_FORMAT "}",
-                         "mix digest", &out.mix_hash, 32,
-                         "result", &out.result, 32);
+                         "mix digest", (const char *)&out.mix_hash, (Py_ssize_t)32,
+                         "result", (const char *)&out.result, (Py_ssize_t)32);
 }
 /*
 // hashimoto_full(dataset, header, nonce)
@@ -198,7 +198,7 @@ get_seedhash(PyObject *self, PyObject *args) {
         return 0;
     }
     ethash_h256_t seedhash = ethash_get_seedhash(block_number);
-    return Py_BuildValue(PY_STRING_FORMAT, (char *) &seedhash, 32);
+    return Py_BuildValue(PY_STRING_FORMAT, (const char *)&seedhash, (Py_ssize_t)32);
 }
 
 static PyMethodDef PyethashMethods[] =
@@ -234,7 +234,8 @@ static struct PyModuleDef PyethashModule = {
 };
 
 PyMODINIT_FUNC PyInit_pyethash(void) {
-    PyObject *module =  PyModule_Create(&PyethashModule);
+    PyObject *module = PyModule_Create(&PyethashModule);
+    if (module == NULL) return NULL;
     // Following Spec: https://github.com/ethereum/wiki/wiki/Ethash#definitions
     PyModule_AddIntConstant(module, "REVISION", (long) ETHASH_REVISION);
     PyModule_AddIntConstant(module, "DATASET_BYTES_INIT", (long) ETHASH_DATASET_BYTES_INIT);
