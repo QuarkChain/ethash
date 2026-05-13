@@ -14,265 +14,131 @@
   You should have received a copy of the GNU General Public License
   along with cpp-ethereum.  If not, see <http://www.gnu.org/licenses/>.
 */
-/** @file benchmark.cpp
- * @author Tim Hughes <tim@twistedfury.com>
- * @date 2015
+/**
+ * @file benchmark.cpp
+ * Updated to use the current ethash API (ethash_light_new / ethash_light_compute /
+ * ethash_full_new / ethash_full_compute).
+ *
+ * Build targets (via cmake from repo root build dir):
+ *   make Benchmark_LIGHT   — light-client mode  (~1K hashes, reports Kh/s)
+ *   make Benchmark_FULL    — full-DAG mode      (~128K hashes, reports Mh/s)
  */
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <chrono>
 #include <libethash/ethash.h>
 #include <libethash/util.h>
-#ifdef OPENCL
-#include <libethash-cl/ethash_cl_miner.h>
-#endif
-#include <vector>
-#include <algorithm>
-
-#ifdef WITH_CRYPTOPP
-#include <libethash/sha3_cryptopp.h>
-#include <string>
-
-#else
-#include "libethash/sha3.h"
-#endif // WITH_CRYPTOPP
-
-#undef min
-#undef max
 
 using std::chrono::high_resolution_clock;
+using std::chrono::duration_cast;
+using std::chrono::microseconds;
+using std::chrono::milliseconds;
 
-#if defined(OPENCL)
-const unsigned trials = 1024*1024*32;
-#elif defined(FULL)
-const unsigned trials = 1024*1024/8;
+// Trial counts — same as original
+#ifdef FULL
+static const unsigned TRIALS = 1024 * 1024 / 8;
 #else
-const unsigned trials = 1024*1024/1024;
-#endif
-uint8_t g_hashes[1024*32];
-
-static char nibbleToChar(unsigned nibble)
-{
-	return (char) ((nibble >= 10 ? 'a'-10 : '0') + nibble);
-}
-
-static uint8_t charToNibble(char chr)
-{
-	if (chr >= '0' && chr <= '9')
-	{
-		return (uint8_t) (chr - '0');
-	}
-	if (chr >= 'a' && chr <= 'z')
-	{
-		return (uint8_t) (chr - 'a' + 10);
-	}
-	if (chr >= 'A' && chr <= 'Z')
-	{
-		return (uint8_t) (chr - 'A' + 10);
-	}
-	return 0;
-}
-
-static std::vector<uint8_t> hexStringToBytes(char const* str)
-{
-	std::vector<uint8_t> bytes(strlen(str) >> 1);
-	for (unsigned i = 0; i != bytes.size(); ++i)
-	{
-		bytes[i] = charToNibble(str[i*2 | 0]) << 4;
-		bytes[i] |= charToNibble(str[i*2 | 1]);
-	}
-	return bytes;
-}
-
-static std::string bytesToHexString(uint8_t const* bytes, unsigned size)
-{
-	std::string str;
-	for (unsigned i = 0; i != size; ++i)
-	{
-		str += nibbleToChar(bytes[i] >> 4);
-		str += nibbleToChar(bytes[i] & 0xf);
-	}
-	return str;
-}
-
-static std::string bytesToHexString(ethash_h256_t const *hash, unsigned size)
-{
-	return bytesToHexString((uint8_t*)hash, size);
-}
-
-extern "C" int main(void)
-{
-	// params for ethash
-	ethash_params params;
-	ethash_params_init(&params, 0);
-	//params.full_size = 262147 * 4096;	// 1GBish;
-	//params.full_size = 32771 * 4096;	// 128MBish;
-	//params.full_size = 8209 * 4096;	// 8MBish;
-	//params.cache_size = 8209*4096;
-	//params.cache_size = 2053*4096;
-	ethash_h256_t seed;
-	ethash_h256_t previous_hash;
-
-	memcpy(&seed, hexStringToBytes("9410b944535a83d9adf6bbdcc80e051f30676173c16ca0d32d6f1263fc246466").data(), 32);
-	memcpy(&previous_hash, hexStringToBytes("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470").data(), 32);
-
-	// allocate page aligned buffer for dataset
-#ifdef FULL
-	void* full_mem_buf = malloc(params.full_size + 4095);
-	void* full_mem = (void*)((uintptr_t(full_mem_buf) + 4095) & ~4095);
-#endif
-	void* cache_mem_buf = malloc(params.cache_size + 63);
-	void* cache_mem = (void*)((uintptr_t(cache_mem_buf) + 63) & ~63);
-
-	ethash_cache cache;
-	cache.mem = cache_mem;
-
-	// compute cache or full data
-	{
-		auto startTime = high_resolution_clock::now();
-		ethash_mkcache(&cache, &params, &seed);
-		auto time = std::chrono::duration_cast<std::chrono::milliseconds>(high_resolution_clock::now() - startTime).count();
-
-		ethash_h256_t cache_hash;
-		SHA3_256(&cache_hash, (uint8_t const*)cache_mem, params.cache_size);
-		debugf("ethash_mkcache: %ums, sha3: %s\n", (unsigned)((time*1000)/CLOCKS_PER_SEC), bytesToHexString(&cache_hash, sizeof(cache_hash)).data());
-
-		// print a couple of test hashes
-		{
-			auto startTime = high_resolution_clock::now();
-			ethash_return_value hash;
-			ethash_light(&hash, &cache, &params, &previous_hash, 0);
-			auto time = std::chrono::duration_cast<std::chrono::milliseconds>(high_resolution_clock::now() - startTime).count();
-			debugf("ethash_light test: %ums, %s\n", (unsigned)time, bytesToHexString(&hash.result, 32).data());
-		}
-
-		#ifdef FULL
-			startTime = high_resolution_clock::now();
-			ethash_compute_full_data(full_mem, &params, &cache);
-			time = std::chrono::duration_cast<std::chrono::milliseconds>(high_resolution_clock::now() - startTime).count();
-			debugf("ethash_compute_full_data: %ums\n", (unsigned)time);
-		#endif // FULL
-	}
-
-#ifdef OPENCL
-	ethash_cl_miner miner;
-	{
-		auto startTime = high_resolution_clock::now();
-		if (!miner.init(params, &seed))
-			exit(-1);
-		auto time = std::chrono::duration_cast<std::chrono::milliseconds>(high_resolution_clock::now() - startTime).count();
-		debugf("ethash_cl_miner init: %ums\n", (unsigned)time);
-	}
+static const unsigned TRIALS = 1024 * 1024 / 1024;
 #endif
 
+// Block number used for benchmarking (epoch 0)
+static const uint64_t BLOCK_NUMBER = 0;
+
+// Fixed header hash for reproducible results
+static ethash_h256_t make_header_hash()
+{
+    ethash_h256_t h;
+    memset(&h, 0, sizeof(h));
+    // use a known non-zero pattern
+    const char* hex = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
+    for (int i = 0; i < 32; ++i) {
+        unsigned byte;
+        sscanf(hex + i * 2, "%02x", &byte);
+        h.b[i] = (uint8_t)byte;
+    }
+    return h;
+}
+
+int main(void)
+{
+    printf("ethash benchmark — block %llu, %u trials\n",
+           (unsigned long long)BLOCK_NUMBER, TRIALS);
+
+    // ---- build light cache ----
+    printf("Building light cache...\n");
+    auto t0 = high_resolution_clock::now();
+    ethash_light_t light = ethash_light_new(BLOCK_NUMBER);
+    auto cache_ms = duration_cast<milliseconds>(high_resolution_clock::now() - t0).count();
+    if (!light) {
+        fprintf(stderr, "ethash_light_new failed\n");
+        return 1;
+    }
+    printf("  cache built in %lld ms\n", (long long)cache_ms);
 
 #ifdef FULL
-	{
-		auto startTime = high_resolution_clock::now();
-		ethash_return_value hash;
-		ethash_full(&hash, full_mem, &params, &previous_hash, 0);
-		auto time = std::chrono::duration_cast<std::chrono::milliseconds>(high_resolution_clock::now() - startTime).count();
-		debugf("ethash_full test: %uns\n", (unsigned)time);
-	}
+    // ---- build full DAG ----
+    printf("Building full DAG (this takes a while)...\n");
+    t0 = high_resolution_clock::now();
+    ethash_full_t full = ethash_full_new(light, NULL);
+    auto dag_ms = duration_cast<milliseconds>(high_resolution_clock::now() - t0).count();
+    if (!full) {
+        fprintf(stderr, "ethash_full_new failed\n");
+        ethash_light_delete(light);
+        return 1;
+    }
+    printf("  DAG built in %lld ms (%.1f GB)\n",
+           (long long)dag_ms,
+           (double)ethash_full_dag_size(full) / (1024.0 * 1024.0 * 1024.0));
 #endif
 
-#ifdef OPENCL
-	// validate 1024 hashes against CPU
-	miner.hash(g_hashes, (uint8_t*)&previous_hash, 0, 1024);
-	for (unsigned i = 0; i != 1024; ++i)
-	{
-		ethash_return_value hash;
-		ethash_light(&hash, &cache, &params, &previous_hash, i);
-		if (memcmp(&hash.result, g_hashes + 32*i, 32) != 0)
-		{
-			debugf("nonce %u failed: %s %s\n", i, bytesToHexString(g_hashes + 32*i, 32).c_str(), bytesToHexString(&hash.result, 32).c_str());
-			static unsigned c = 0;
-			if (++c == 16)
-			{
-				exit(-1);
-			}
-		}
-	}
-
-	// ensure nothing else is going on
-	miner.finish();
-#endif
-
-	auto startTime = high_resolution_clock::now();
-	unsigned hash_count = trials;
-
-	#ifdef OPENCL
-	{
-		struct search_hook : ethash_cl_miner::search_hook
-		{
-			unsigned hash_count;
-			std::vector<uint64_t> nonce_vec;
-
-			virtual bool found(uint64_t const* nonces, uint32_t count)
-			{
-				nonce_vec.insert(nonce_vec.end(), nonces, nonces + count);
-				return false;
-			}
-
-			virtual bool searched(uint64_t start_nonce, uint32_t count)
-			{
-				// do nothing
-				hash_count += count;
-				return hash_count >= trials;
-			}
-		};
-		search_hook hook;
-		hook.hash_count = 0;
-
-		miner.search((uint8_t*)&previous_hash, 0x000000ffffffffff, hook);
-
-		for (unsigned i = 0; i != hook.nonce_vec.size(); ++i)
-		{
-			uint64_t nonce = hook.nonce_vec[i];
-			ethash_return_value hash;
-			ethash_light(&hash, &cache, &params, &previous_hash, nonce);
-			debugf("found: %.8x%.8x -> %s\n", unsigned(nonce>>32), unsigned(nonce), bytesToHexString(&hash.result, 32).c_str());
-		}
-
-		hash_count = hook.hash_count;
-	}
-	#else
-	{
-		//#pragma omp parallel for
-		for (int nonce = 0; nonce < trials; ++nonce)
-		{
-			ethash_return_value hash;
-			#ifdef FULL
-				ethash_full(&hash, full_mem, &params, &previous_hash, nonce);
-			#else
-				ethash_light(&hash, &cache, &params, &previous_hash, nonce);
-			#endif // FULL
-		}
-	}
-	#endif
-	auto time = std::chrono::duration_cast<std::chrono::microseconds>(high_resolution_clock::now() - startTime).count();
-	debugf("Search took: %ums\n", (unsigned)time/1000);
-
-	unsigned read_size = ETHASH_ACCESSES * ETHASH_MIX_BYTES;
-#if defined(OPENCL) || defined(FULL)
-	debugf(
-		"hashrate: %8.2f Mh/s, bw: %8.2f GB/s\n",
-		(double)hash_count * (1000*1000)/time / (1000*1000),
-		(double)hash_count*read_size * (1000*1000)/time / (1024*1024*1024)
-		);
+    // ---- one warm-up hash ----
+    ethash_h256_t header = make_header_hash();
+    {
+        ethash_return_value_t result;
+#ifdef FULL
+        result = ethash_full_compute(full, header, 0);
 #else
-	debugf(
-		"hashrate: %8.2f Kh/s, bw: %8.2f MB/s\n",
-		(double)hash_count * (1000*1000)/time / (1000),
-		(double)hash_count*read_size * (1000*1000)/time / (1024*1024)
-		);
+        result = ethash_light_compute(light, header, 0);
 #endif
+        printf("  warm-up result: %02x%02x%02x%02x...\n",
+               result.result.b[0], result.result.b[1],
+               result.result.b[2], result.result.b[3]);
+    }
 
-	free(cache_mem_buf);
+    // ---- timed benchmark loop ----
+    printf("Running %u hashes...\n", TRIALS);
+    t0 = high_resolution_clock::now();
+    for (unsigned nonce = 0; nonce < TRIALS; ++nonce) {
 #ifdef FULL
-	free(full_mem_buf);
+        ethash_full_compute(full, header, nonce);
+#else
+        ethash_light_compute(light, header, nonce);
 #endif
+    }
+    auto elapsed_us = duration_cast<microseconds>(high_resolution_clock::now() - t0).count();
 
-	return 0;
+    // ---- report ----
+    double elapsed_s = elapsed_us / 1e6;
+    double hashrate  = TRIALS / elapsed_s;
+    unsigned read_bytes = ETHASH_ACCESSES * ETHASH_MIX_BYTES;
+
+#ifdef FULL
+    printf("Full-DAG hashrate : %8.2f Mh/s\n", hashrate / 1e6);
+    printf("Memory bandwidth  : %8.2f GB/s\n",
+           hashrate * read_bytes / (1024.0 * 1024.0 * 1024.0));
+#else
+    printf("Light hashrate    : %8.2f Kh/s\n", hashrate / 1e3);
+    printf("Memory bandwidth  : %8.2f MB/s\n",
+           hashrate * read_bytes / (1024.0 * 1024.0));
+#endif
+    printf("Elapsed           : %.3f s (%lld us/hash)\n",
+           elapsed_s, (long long)(elapsed_us / TRIALS));
+
+#ifdef FULL
+    ethash_full_delete(full);
+#endif
+    ethash_light_delete(light);
+    return 0;
 }

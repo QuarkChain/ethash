@@ -1,16 +1,7 @@
 #!/bin/bash
-
-# Strict mode
+# Run Python tests.  The venv and pyethash extension are built by build.sh;
+# this script only activates the venv and runs pytest.
 set -e
-
-if [ -x "$(which virtualenv2)" ] ; then
-   VIRTUALENV_EXEC=virtualenv2
-elif [ -x "$(which virtualenv)" ] ; then
-   VIRTUALENV_EXEC=virtualenv
-else
-   echo "Could not find a suitable version of virtualenv"
-   false
-fi
 
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE" ]; do
@@ -19,12 +10,14 @@ while [ -h "$SOURCE" ]; do
   [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 TEST_DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+REPO_ROOT="$( cd "$TEST_DIR/../.." && pwd )"
+VENV_DIR="$TEST_DIR/python-virtual-env"
 
-[ -d $TEST_DIR/python-virtual-env ] || $VIRTUALENV_EXEC --system-site-packages $TEST_DIR/python-virtual-env
-source $TEST_DIR/python-virtual-env/bin/activate
-pip install -r $TEST_DIR/requirements.txt > /dev/null
-# force installation of nose in virtualenv even if existing in thereuser's system
-pip install nose -I
-pip install --upgrade --no-deps --force-reinstall -e $TEST_DIR/../..
-cd $TEST_DIR
-nosetests --with-doctest -v --nocapture
+# Fallback: if venv is missing (running standalone without build.sh), build now.
+if [ ! -d "$VENV_DIR" ]; then
+    echo "[test/python] venv not found — running build.sh first"
+    "$REPO_ROOT/build.sh"
+fi
+
+source "$VENV_DIR/bin/activate"
+pytest "$TEST_DIR/test_pyethash.py" -v

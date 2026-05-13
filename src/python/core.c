@@ -25,6 +25,10 @@ mkcache_bytes(PyObject *self, PyObject *args) {
         return 0;
 
     ethash_light_t L = ethash_light_new(block_number);
+    if (!L) {
+        PyErr_NoMemory();
+        return NULL;
+    }
     PyObject * val = Py_BuildValue(PY_STRING_FORMAT, L->cache, (Py_ssize_t)L->cache_size);
     ethash_light_delete(L);
     return val;
@@ -77,18 +81,22 @@ hashimoto_light(PyObject *self, PyObject *args) {
     if (!PyArg_ParseTuple(args, "k" PY_STRING_FORMAT PY_STRING_FORMAT "K", &block_number, &cache_bytes, &cache_size, &header, &header_size, &nonce))
         return 0;
     if (header_size != 32) {
-        char error_message[1024];
-        sprintf(error_message, "Seed must be 32 bytes long (was %i)", header_size);
-        PyErr_SetString(PyExc_ValueError, error_message);
+        PyErr_Format(PyExc_ValueError, "Seed must be 32 bytes long (was %zd)", header_size);
         return 0;
     }
     struct ethash_light *s;
     s = calloc(sizeof(*s), 1);
+    if (!s) { PyErr_NoMemory(); return NULL; }
+    // Borrow the caller-owned cache_bytes pointer — s does NOT own this memory.
+    // The struct is freed below after ethash_light_compute; the underlying
+    // cache buffer belongs to the Python bytes object passed in by the caller.
     s->cache = cache_bytes;
     s->cache_size = (uint64_t)cache_size;
     s->block_number = block_number;
     struct ethash_h256 *h;
     h = calloc(sizeof(*h), 1);
+    // Free s on OOM before returning so we don't leak the first allocation.
+    if (!h) { free(s); PyErr_NoMemory(); return NULL; }
     for (int i = 0; i < 32; i++) h->b[i] = header[i];
     struct ethash_return_value out = ethash_light_compute(s, *h, nonce);
     free(s);
@@ -191,10 +199,9 @@ get_seedhash(PyObject *self, PyObject *args) {
     if (!PyArg_ParseTuple(args, "k", &block_number))
         return 0;
     if (block_number >= ETHASH_EPOCH_LENGTH * 2048) {
-        char error_message[1024];
-        sprintf(error_message, "Block number must be less than %i (was %lu)", ETHASH_EPOCH_LENGTH * 2048, block_number);
-
-        PyErr_SetString(PyExc_ValueError, error_message);
+        PyErr_Format(PyExc_ValueError,
+            "Block number must be less than %lu (was %lu)",
+            (unsigned long)(ETHASH_EPOCH_LENGTH * 2048), block_number);
         return 0;
     }
     ethash_h256_t seedhash = ethash_get_seedhash(block_number);

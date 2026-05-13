@@ -1,6 +1,5 @@
 #!/bin/bash
-
-# Strict mode
+# Master test runner: build first, then run all test suites.
 set -e
 
 SOURCE="${BASH_SOURCE[0]}"
@@ -10,23 +9,33 @@ while [ -h "$SOURCE" ]; do
   [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 TEST_DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+REPO_ROOT="$( cd "$TEST_DIR/.." && pwd )"
+BUILD_DIR="$REPO_ROOT/build"
+
+# Use the .built stamp (touched by build.sh on success) as the build indicator.
+# Checking the stamp is more reliable than checking individual binaries because
+# it reflects a complete, successful build rather than a partial one.
+if [ ! -f "$BUILD_DIR/.built" ]; then
+    echo "[test] Build stamp missing — running build.sh first"
+    "$REPO_ROOT/build.sh"
+fi
 
 echo -e "\n################# Testing JS ##################"
-# TODO: Use mocha and real testing tools instead of rolling our own
-cd $TEST_DIR/../js 
-if [ -x "$(which nodejs)" ] ; then 
-	nodejs test.js
-fi
-if [ -x "$(which node)" ] ; then 
-	node test.js
-fi
+cd "$REPO_ROOT/js"
+if [ -x "$(which nodejs)" ]; then nodejs test.js; fi
+if [ -x "$(which node)" ];   then node test.js;    fi
 
 echo -e "\n################# Testing C ##################"
-$TEST_DIR/c/test.sh
+"$TEST_DIR/c/test.sh"
 
-# Temporarily commenting out python tests until they conform to the API
-#echo -e "\n################# Testing Python ##################"
-#$TEST_DIR/python/test.sh
+echo -e "\n################# Testing Python ##################"
+"$TEST_DIR/python/test.sh"
 
-echo "################# Testing Go ##################"
-cd $TEST_DIR/.. && go test -timeout 9999s
+echo -e "\n################# Testing Go ##################"
+cd "$REPO_ROOT"
+# GOEXPERIMENT=noswissmap: Go 1.24 has a CGo+Swiss-map bug where map.go and
+# linkname_swiss.go both get compiled, causing "redeclared" runtime errors.
+# Disabling Swiss maps avoids the conflict until the Go toolchain is fixed.
+GOEXPERIMENT=noswissmap go test -timeout 9999s
+
+echo -e "\n################# All tests passed ##################"

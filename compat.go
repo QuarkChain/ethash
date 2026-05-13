@@ -16,16 +16,12 @@
 
 package ethash
 
-import (
-	"math/big"
-
-	"github.com/ethereum/go-ethereum/common"
-)
+import "math/big"
 
 type Block interface {
 	Difficulty() *big.Int
-	HashNoNonce() common.Hash
+	HashNoNonce() Hash
 	Nonce() uint64
-	MixDigest() common.Hash
+	MixDigest() Hash
 	NumberU64() uint64
 }
