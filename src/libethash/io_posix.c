@@ -36,7 +36,18 @@ FILE* ethash_fopen(char const* file_name, char const* mode)
 
 char* ethash_strncat(char* dest, size_t dest_size, char const* src, size_t count)
 {
-	return strlen(dest) + count + 1 <= dest_size ? strncat(dest, src, count) : NULL;
+	size_t dest_len = strlen(dest);
+	if (dest_len + count + 1 > dest_size) {
+		return NULL;
+	}
+	/* Use memcpy instead of strncat(dest, src, count) to avoid a
+	 * -Wstringop-overflow warning from glibc fortify: when the bound passed
+	 * to strncat equals strlen(src) the compiler treats it as an unchecked
+	 * strcat and warns.  memcpy is equivalent here because the length check
+	 * above already guarantees there is room, and we add the NUL explicitly. */
+	memcpy(dest + dest_len, src, count);
+	dest[dest_len + count] = '\0';
+	return dest;
 }
 
 bool ethash_mkdir(char const* dirname)

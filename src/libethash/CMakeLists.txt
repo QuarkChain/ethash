@@ -25,20 +25,10 @@ else()
 	list(APPEND FILES io_posix.c)
 endif()
 
-if (NOT CRYPTOPP_FOUND)
-	find_package(CryptoPP 5.6.2)
-endif()
-
-if (CRYPTOPP_FOUND)
-	add_definitions(-DWITH_CRYPTOPP)
-	include_directories( ${CRYPTOPP_INCLUDE_DIRS} )
-	list(APPEND FILES sha3_cryptopp.cpp sha3_cryptopp.h)
-else()
-	list(APPEND FILES sha3.c sha3.h)
-endif()
+# Always use the bundled Keccak implementation (sha3.c). Crypto++ >= 5.6.3
+# renamed its pre-finalized Keccak to the standardized FIPS 202 SHA-3 (padding
+# 0x06 vs 0x01) while keeping the SHA3_256/SHA3_512 names, which silently breaks
+# ethash on any system with a modern libcryptopp installed.
+list(APPEND FILES sha3.c sha3.h)
 
 add_library(${LIBRARY} ${FILES})
-
-if (CRYPTOPP_FOUND)
-	TARGET_LINK_LIBRARIES(${LIBRARY} ${CRYPTOPP_LIBRARIES})
-endif()

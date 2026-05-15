@@ -20,30 +20,86 @@ package ethash
 
 /*
 #include "src/libethash/internal.h"
+#include "src/libethash/sha3.h"
+
+// ethash_keccak256_go: thin C wrapper so Go can call the already-compiled
+// Keccak-256 (sha3_256 with 0x01 padding, as required by Ethereum) without
+// any extra Go-level dependency.
+static void __attribute__((unused))
+ethash_keccak256_go(uint8_t* out, const uint8_t* data, size_t len) {
+    sha3_256(out, 32, data, len);
+}
 
 int ethashGoCallback_cgo(unsigned);
 */
 import "C"
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"log"
 	"math/big"
 	"math/rand"
 	"os"
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
-
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/log"
 )
+
+// ---------------------------------------------------------------------------
+// Hash type — replaces github.com/ethereum/go-ethereum/common.Hash
+// ---------------------------------------------------------------------------
+
+// Hash is a 32-byte Keccak-256 digest.
+type Hash [32]byte
+
+// HexToHash decodes a hex string (with or without 0x prefix) into a Hash.
+func HexToHash(s string) Hash {
+	s = strings.TrimPrefix(s, "0x")
+	b, _ := hex.DecodeString(s)
+	return BytesToHash(b)
+}
+
+// BytesToHash right-aligns b into a 32-byte Hash.
+func BytesToHash(b []byte) Hash {
+	var h Hash
+	if len(b) > 32 {
+		b = b[len(b)-32:]
+	}
+	copy(h[32-len(b):], b)
+	return h
+}
+
+// Big interprets the hash as a big-endian unsigned integer.
+func (h Hash) Big() *big.Int { return new(big.Int).SetBytes(h[:]) }
+
+// keccak256Hash computes the Keccak-256 hash of the concatenation of inputs
+// using the C implementation already compiled in via ethashc.go (sha3.c).
+// This avoids any external Go dependency and the //go:linkname conflicts
+// that golang.org/x/sys introduces in Go 1.24 with Swiss maps.
+func keccak256Hash(data ...[]byte) Hash {
+	var combined []byte
+	for _, b := range data {
+		combined = append(combined, b...)
+	}
+	var h Hash
+	if len(combined) > 0 {
+		C.ethash_keccak256_go(
+			(*C.uint8_t)(unsafe.Pointer(&h[0])),
+			(*C.uint8_t)(unsafe.Pointer(&combined[0])),
+			C.size_t(len(combined)),
+		)
+	} else {
+		C.ethash_keccak256_go((*C.uint8_t)(unsafe.Pointer(&h[0])), nil, 0)
+	}
+	return h
+}
 
 var (
 	maxUint256  = new(big.Int).Exp(big.NewInt(2), big.NewInt(256), big.NewInt(0))
@@ -87,14 +143,19 @@ func (cache *cache) generate() {
 	cache.gen.Do(func() {
 		started := time.Now()
 		seedHash := makeSeedHash(cache.epoch)
-		log.Debug(fmt.Sprintf("Generating cache for epoch %d (%x)", cache.epoch, seedHash))
+		log.Printf("[ethash] Generating cache for epoch %d (%x)", cache.epoch, seedHash)
 		size := C.ethash_get_cachesize(C.uint64_t(cache.epoch * epochLength))
 		if cache.test {
 			size = cacheSizeForTesting
 		}
 		cache.ptr = C.ethash_light_new_internal(size, (*C.ethash_h256_t)(unsafe.Pointer(&seedHash[0])))
+		// Panic rather than silently storing a nil ptr that would crash later
+		// inside compute() when the C code dereferences light->cache.
+		if cache.ptr == nil {
+			panic(fmt.Sprintf("ethash: ethash_light_new_internal returned nil for epoch %d (OOM?)", cache.epoch))
+		}
 		runtime.SetFinalizer(cache, freeCache)
-		log.Debug(fmt.Sprintf("Done generating cache for epoch %d, it took %v", cache.epoch, time.Since(started)))
+		log.Printf("[ethash] Done generating cache for epoch %d, took %v", cache.epoch, time.Since(started))
 	})
 }
 
@@ -103,11 +164,9 @@ func freeCache(cache *cache) {
 	cache.ptr = nil
 }
 
-func (cache *cache) compute(dagSize uint64, hash common.Hash, nonce uint64) (ok bool, mixDigest, result common.Hash) {
+func (cache *cache) compute(dagSize uint64, hash Hash, nonce uint64) (ok bool, mixDigest, result Hash) {
 	ret := C.ethash_light_compute_internal(cache.ptr, C.uint64_t(dagSize), hashToH256(hash), C.uint64_t(nonce))
-	// Make sure cache is live until after the C call.
-	// This is important because a GC might happen and execute
-	// the finalizer before the call completes.
+	// Keep cache alive past the C call to prevent premature GC finalisation.
 	_ = cache
 	return bool(ret.success), h256ToHash(ret.mix_hash), h256ToHash(ret.result)
 }
@@ -126,22 +185,13 @@ type Light struct {
 
 // Verify checks whether the block's nonce is valid.
 func (l *Light) Verify(block Block) bool {
-	// TODO: do ethash_quick_verify before getCache in order
-	// to prevent DOS attacks.
 	blockNum := block.NumberU64()
 	if blockNum >= epochLength*2048 {
-		log.Debug(fmt.Sprintf("block number %d too high, limit is %d", epochLength*2048))
 		return false
 	}
 
 	difficulty := block.Difficulty()
-	/* Cannot happen if block header diff is validated prior to PoW, but can
-		 happen if PoW is checked first due to parallel PoW checking.
-		 We could check the minimum valid difficulty but for SoC we avoid (duplicating)
-	   Ethereum protocol consensus rules here which are not in scope of Ethash
-	*/
-	if difficulty.Cmp(common.Big0) == 0 {
-		log.Debug("invalid block difficulty")
+	if difficulty.Cmp(new(big.Int)) == 0 {
 		return false
 	}
 
@@ -150,27 +200,22 @@ func (l *Light) Verify(block Block) bool {
 	if l.test {
 		dagSize = dagSizeForTesting
 	}
-	// Recompute the hash using the cache.
 	ok, mixDigest, result := cache.compute(uint64(dagSize), block.HashNoNonce(), block.Nonce())
 	if !ok {
 		return false
 	}
-
-	// avoid mixdigest malleability as it's not included in a block's "hashNononce"
 	if block.MixDigest() != mixDigest {
 		return false
 	}
-
-	// The actual check.
 	target := new(big.Int).Div(maxUint256, difficulty)
 	return result.Big().Cmp(target) <= 0
 }
 
-func h256ToHash(in C.ethash_h256_t) common.Hash {
-	return *(*common.Hash)(unsafe.Pointer(&in.b))
+func h256ToHash(in C.ethash_h256_t) Hash {
+	return *(*Hash)(unsafe.Pointer(&in.b))
 }
 
-func hashToH256(in common.Hash) C.ethash_h256_t {
+func hashToH256(in Hash) C.ethash_h256_t {
 	return C.ethash_h256_t{b: *(*[32]C.uint8_t)(unsafe.Pointer(&in[0]))}
 }
 
@@ -178,7 +223,6 @@ func (l *Light) getCache(blockNum uint64) *cache {
 	var c *cache
 	epoch := blockNum / epochLength
 
-	// If we have a PoW for that epoch, use that
 	l.mu.Lock()
 	if l.caches == nil {
 		l.caches = make(map[uint64]*cache)
@@ -188,7 +232,6 @@ func (l *Light) getCache(blockNum uint64) *cache {
 	}
 	c = l.caches[epoch]
 	if c == nil {
-		// No cached DAG, evict the oldest if the cache limit was reached
 		if len(l.caches) >= l.NumCaches {
 			var evict *cache
 			for _, cache := range l.caches {
@@ -196,22 +239,16 @@ func (l *Light) getCache(blockNum uint64) *cache {
 					evict = cache
 				}
 			}
-			log.Debug(fmt.Sprintf("Evicting DAG for epoch %d in favour of epoch %d", evict.epoch, epoch))
 			delete(l.caches, evict.epoch)
 		}
-		// If we have the new DAG pre-generated, use that, otherwise create a new one
 		if l.future != nil && l.future.epoch == epoch {
-			log.Debug(fmt.Sprintf("Using pre-generated DAG for epoch %d", epoch))
 			c, l.future = l.future, nil
 		} else {
-			log.Debug(fmt.Sprintf("No pre-generated DAG available, creating new for epoch %d", epoch))
 			c = &cache{epoch: epoch, test: l.test}
 		}
 		l.caches[epoch] = c
 
-		// If we just used up the future cache, or need a refresh, regenerate
 		if l.future == nil || l.future.epoch <= epoch {
-			log.Debug(fmt.Sprintf("Pre-generating DAG for epoch %d", epoch+1))
 			l.future = &cache{epoch: epoch + 1, test: l.test}
 			go l.future.generate()
 		}
@@ -219,7 +256,6 @@ func (l *Light) getCache(blockNum uint64) *cache {
 	c.used = time.Now()
 	l.mu.Unlock()
 
-	// Wait for generation finish and return the cache
 	c.generate()
 	return c
 }
@@ -254,24 +290,24 @@ func (d *dag) generate() {
 		if d.dir == "" {
 			d.dir = DefaultDir
 		}
-		log.Info(fmt.Sprintf("Generating DAG for epoch %d (size %d) (%x)", d.epoch, dagSize, seedHash))
-		// Generate a temporary cache.
-		// TODO: this could share the cache with Light
+		log.Printf("[ethash] Generating DAG for epoch %d (size %d) (%x)", d.epoch, dagSize, seedHash)
 		cache := C.ethash_light_new_internal(cacheSize, (*C.ethash_h256_t)(unsafe.Pointer(&seedHash[0])))
 		defer C.ethash_light_delete(cache)
-		// Generate the actual DAG.
+		// C.CString allocates on the C heap — free after the call.
+		cDir := C.CString(d.dir)
 		d.ptr = C.ethash_full_new_internal(
-			C.CString(d.dir),
+			cDir,
 			hashToH256(seedHash),
 			dagSize,
 			cache,
 			(C.ethash_callback_t)(unsafe.Pointer(C.ethashGoCallback_cgo)),
 		)
+		C.free(unsafe.Pointer(cDir))
 		if d.ptr == nil {
 			panic("ethash_full_new IO or memory error")
 		}
 		runtime.SetFinalizer(d, freeDAG)
-		log.Info(fmt.Sprintf("Done generating DAG for epoch %d, it took %v", d.epoch, time.Since(started)))
+		log.Printf("[ethash] Done generating DAG for epoch %d, took %v", d.epoch, time.Since(started))
 	})
 }
 
@@ -286,7 +322,7 @@ func (d *dag) Ptr() unsafe.Pointer {
 
 //export ethashGoCallback
 func ethashGoCallback(percent C.unsigned) C.int {
-	log.Info(fmt.Sprintf("Generating DAG: %d%%", percent))
+	log.Printf("[ethash] Generating DAG: %d%%", percent)
 	return 0
 }
 
@@ -327,7 +363,6 @@ func (pow *Full) getDAG(blockNum uint64) (d *dag) {
 		pow.current = d
 	}
 	pow.mu.Unlock()
-	// wait for it to finish generating.
 	d.generate()
 	return d
 }
@@ -353,9 +388,6 @@ func (pow *Full) Search(block Block, stop <-chan struct{}, index int) (nonce uin
 			return 0, nil
 		default:
 			i++
-
-			// we don't have to update hash rate on every nonce, so update after
-			// first nonce check and then after 2^X nonces
 			if i == 2 || ((i % (1 << 16)) == 0) {
 				elapsed := time.Now().UnixNano() - start
 				hashes := (float64(1e9) / float64(elapsed)) * float64(i-starti)
@@ -367,7 +399,6 @@ func (pow *Full) Search(block Block, stop <-chan struct{}, index int) (nonce uin
 			ret := C.ethash_full_compute(dag.ptr, hash, C.uint64_t(nonce))
 			result := h256ToHash(ret.result).Big()
 
-			// TODO: disagrees with the spec https://github.com/ethereum/wiki/wiki/Ethash#mining
 			if ret.success && result.Cmp(target) <= 0 {
 				mixDigest = C.GoBytes(unsafe.Pointer(&ret.mix_hash), C.int(32))
 				atomic.AddInt32(&pow.hashRate, -previousHashrate)
@@ -387,7 +418,6 @@ func (pow *Full) GetHashrate() int64 {
 }
 
 func (pow *Full) Turbo(on bool) {
-	// TODO: this needs to use an atomic operation.
 	pow.turbo = on
 }
 
@@ -416,7 +446,7 @@ func NewShared() *Ethash {
 // Nonces found by a testing instance are not verifiable with a
 // regular-size cache.
 func NewForTesting() (*Ethash, error) {
-	dir, err := ioutil.TempDir("", "ethash-test")
+	dir, err := os.MkdirTemp("", "ethash-test")
 	if err != nil {
 		return nil, err
 	}
@@ -431,9 +461,9 @@ func GetSeedHash(blockNum uint64) ([]byte, error) {
 	return sh[:], nil
 }
 
-func makeSeedHash(epoch uint64) (sh common.Hash) {
+func makeSeedHash(epoch uint64) (sh Hash) {
 	for ; epoch > 0; epoch-- {
-		sh = crypto.Sha3Hash(sh[:])
+		sh = keccak256Hash(sh[:])
 	}
 	return sh
 }

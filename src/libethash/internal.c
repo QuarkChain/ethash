@@ -323,6 +323,11 @@ ethash_light_t ethash_light_new(uint64_t block_number)
 	ethash_h256_t seedhash = ethash_get_seedhash(block_number);
 	ethash_light_t ret;
 	ret = ethash_light_new_internal(ethash_get_cachesize(block_number), &seedhash);
+	// ethash_light_new_internal returns NULL on malloc failure; propagate
+	// rather than storing block_number through a NULL pointer.
+	if (!ret) {
+		return NULL;
+	}
 	ret->block_number = block_number;
 	return ret;
 }
@@ -380,6 +385,10 @@ static bool ethash_mmap(struct ethash_full* ret, FILE* f)
 	if (mmapped_data == MAP_FAILED) {
 		return false;
 	}
+	/* Skip the 8-byte magic number at the start of the file so that ret->data
+	 * points directly at the DAG content.  munmap must use the original
+	 * mmapped_data pointer (page-aligned); callers recover it via
+	 * (char*)ret->data - ETHASH_DAG_MAGIC_NUM_SIZE. */
 	ret->data = (node*)(mmapped_data + ETHASH_DAG_MAGIC_NUM_SIZE);
 	return true;
 }
@@ -446,8 +455,13 @@ ethash_full_t ethash_full_new_internal(
 	return ret;
 
 fail_free_full_data:
-	// could check that munmap(..) == 0 but even if it did not can't really do anything here
-	munmap(ret->data, (size_t)full_size);
+	/* ret->data is offset by ETHASH_DAG_MAGIC_NUM_SIZE from the mmap base.
+	 * munmap requires the original page-aligned address returned by mmap,
+	 * and the full mapped length including the magic-number prefix. */
+	munmap(
+		(char*)ret->data - ETHASH_DAG_MAGIC_NUM_SIZE,
+		(size_t)full_size + ETHASH_DAG_MAGIC_NUM_SIZE
+	);
 fail_close_file:
 	fclose(ret->file);
 fail_free_full:
@@ -468,8 +482,20 @@ ethash_full_t ethash_full_new(ethash_light_t light, ethash_callback_t callback)
 
 void ethash_full_delete(ethash_full_t full)
 {
-	// could check that munmap(..) == 0 but even if it did not can't really do anything here
-	munmap(full->data, (size_t)full->file_size);
+	/* Recover the original mmap base: full->data points ETHASH_DAG_MAGIC_NUM_SIZE
+	 * bytes past the start of the mapping (past the 8-byte magic number header).
+	 * munmap must receive the page-aligned address returned by mmap together
+	 * with the total mapped length, otherwise it returns EINVAL and the mapping
+	 * is silently left open — leaving dirty DAG pages unflushed to disk. */
+	char* const map_start = (char*)full->data - ETHASH_DAG_MAGIC_NUM_SIZE;
+	size_t const map_size = (size_t)full->file_size + ETHASH_DAG_MAGIC_NUM_SIZE;
+	// msync ensures dirty mmap pages are written to the underlying file before
+	// munmap, which is necessary on some filesystems (e.g. NTFS via WSL DrvFs)
+	// where MAP_SHARED writes may not be visible to a subsequent fopen otherwise.
+#ifndef _WIN32
+	msync(map_start, map_size, MS_SYNC);
+#endif
+	munmap(map_start, map_size);
 	if (full->file) {
 		fclose(full->file);
 	}
