@@ -1,54 +1,48 @@
-if (MSVC)
-    if (NOT BOOST_ROOT)
-        set (BOOST_ROOT "$ENV{BOOST_ROOT}")
-    endif()
-    set (CMAKE_PREFIX_PATH BOOST_ROOT)
+if (NOT BOOST_ROOT AND DEFINED ENV{BOOST_ROOT})
+    set(BOOST_ROOT "$ENV{BOOST_ROOT}")
+endif()
+if (BOOST_ROOT)
+    set(CMAKE_PREFIX_PATH "${BOOST_ROOT};${CMAKE_PREFIX_PATH}")
 endif()
 
-IF( NOT Boost_FOUND )
-    # use multithreaded boost libraries, with -mt suffix
-    set(Boost_USE_MULTITHREADED ON)
+# The C test suite is required by the build, so fail during configuration when
+# any of its Boost components are unavailable instead of omitting Test.
+# use multithreaded boost libraries, with -mt suffix
+set(Boost_USE_MULTITHREADED ON)
 
-    if (MSVC)
-        # TODO handle other msvc versions or it will fail find them
-        set(Boost_COMPILER -vc120)
-        # use static boost libraries *.lib
-        set(Boost_USE_STATIC_LIBS ON)
-    elseif (APPLE)
+if (MSVC)
+    # use static boost libraries *.lib
+    set(Boost_USE_STATIC_LIBS ON)
+elseif (APPLE)
+    # use static boost libraries *.a
+    set(Boost_USE_STATIC_LIBS ON)
+elseif (UNIX)
+    # use dynamic boost libraries .dll
+    set(Boost_USE_STATIC_LIBS OFF)
+endif()
 
-        # use static boost libraries *.a
-        set(Boost_USE_STATIC_LIBS ON)
+# Prefer the package configuration shipped by modern Boost distributions (for
+# example Homebrew on macOS), then fall back to CMake's legacy FindBoost module
+# for system packages that do not ship BoostConfig.cmake.
+find_package(Boost 1.48.0 CONFIG QUIET COMPONENTS unit_test_framework system filesystem)
+if (NOT Boost_FOUND)
+    find_package(Boost 1.48.0 MODULE REQUIRED COMPONENTS unit_test_framework system filesystem)
+endif()
 
-    elseif (UNIX)
-        # use dynamic boost libraries .dll
-        set(Boost_USE_STATIC_LIBS OFF)
+file(GLOB HEADERS "*.h")
 
-    endif()
-    find_package(Boost 1.48.0 COMPONENTS unit_test_framework system filesystem)
-ENDIF()
+add_executable(Test "./test.cpp" ${HEADERS})
+target_compile_features(Test PRIVATE cxx_std_11)
+target_include_directories(Test PRIVATE ../../src)
+if ((NOT MSVC) AND (NOT APPLE))
+    target_compile_definitions(Test PRIVATE BOOST_TEST_DYN_LINK)
+endif()
+target_link_libraries(Test PRIVATE
+    ${ETHHASH_LIBS}
+    Boost::filesystem
+    Boost::system
+    Boost::unit_test_framework
+)
 
-IF (Boost_FOUND)
-    message(STATUS "boost header: ${Boost_INCLUDE_DIRS}")
-    message(STATUS "boost libs  : ${Boost_LIBRARIES}")
-
-    include_directories( ${Boost_INCLUDE_DIR} )
-    include_directories(../../src)
-
-    link_directories(${Boost_LIBRARY_DIRS})
-    file(GLOB HEADERS "*.h")
-    if ((NOT MSVC) AND (NOT APPLE))
-        ADD_DEFINITIONS(-DBOOST_TEST_DYN_LINK)
-    endif()
-   if (NOT MSVC)
-        set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -std=c++11 ")
-   endif()
-
-    add_executable (Test "./test.cpp" ${HEADERS})
-    target_link_libraries(Test ${ETHHASH_LIBS})
-    target_link_libraries(Test ${Boost_FILESYSTEM_LIBRARIES})
-    target_link_libraries(Test ${Boost_SYSTEM_LIBRARIES})
-    target_link_libraries(Test ${Boost_UNIT_TEST_FRAMEWORK_LIBRARIES})
-
-    enable_testing ()
-    add_test(NAME ethash COMMAND Test)
-ENDIF()
+enable_testing()
+add_test(NAME ethash COMMAND Test)
