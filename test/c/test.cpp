@@ -27,7 +27,8 @@
 #include <boost/test/unit_test.hpp>
 
 using namespace std;
-using bytes = std::vector<uint8_t>;
+using byte = uint8_t;
+using bytes = std::vector<byte>;
 namespace fs = boost::filesystem;
 
 // Just an alloca "wrapper" to silence uint64_t to size_t conversion warnings in windows
@@ -82,7 +83,7 @@ bytes hexStringToBytes(std::string const& _s)
 	for (unsigned i = s; i < _s.size(); i += 2)
 		try
 		{
-			ret.push_back((uint8_t)(fromHex(_s[i]) * 16 + fromHex(_s[i + 1])));
+			ret.push_back((byte)(fromHex(_s[i]) * 16 + fromHex(_s[i + 1])));
 		}
 		catch (...){
 			ret.push_back(0);

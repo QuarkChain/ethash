@@ -13,11 +13,14 @@ Tests that cannot be ported (functions removed from C extension):
   - test_mining_*               : mine() commented out
 """
 import hashlib
+import os
 import pytest
 import pyethash
 from random import randint
 from Crypto.Hash import keccak
 
+EXPECTED_DIR = os.path.join(os.path.dirname(__file__), "expected")
+   
 def _keccak256(data: bytes) -> bytes:
     return keccak.new(digest_bits=256, data=data).digest()
 
@@ -65,13 +68,13 @@ def test_mkcache_is_as_expected(cache_epoch0):
     assert len(cache_epoch0) % pyethash.HASH_BYTES == 0
 
     # Compare SHA-256 fingerprint against stored reference
-    expected = "396c1ff479b0a02b88bad57fe69a6a4f573b180cc4f108d0d7f431a7d3d666d9"
+    expected = "396c1ff479b0a02b88bad57fe69a6a4f573b180cc4f108d0d7f431a7d3d666d9"  # pre-computed for epoch-0
     actual = hashlib.sha256(cache_epoch0).hexdigest()
     assert actual == expected, (
         f"cache_epoch0 SHA-256 mismatch:\n  got:      {actual}\n  expected: {expected}"
     )
 
-    expected = "fda2c14d3a454243c6f58f74ec60ae854f7d286497757ad32449e42e2dcd0535"
+    expected = "fda2c14d3a454243c6f58f74ec60ae854f7d286497757ad32449e42e2dcd0535"  # pre-computed for epoch-1 
     raw = pyethash.mkcache_bytes(pyethash.EPOCH_LENGTH)
     actual = hashlib.sha256(raw).hexdigest()
     assert actual == expected, (
@@ -134,3 +137,5 @@ def test_get_seedhash():
     # Out-of-range block number must raise
     with pytest.raises(ValueError):
         pyethash.get_seedhash(pyethash.EPOCH_LENGTH * 2048)
+
+

@@ -17,7 +17,7 @@ elseif (APPLE)
     # use static boost libraries *.a
     set(Boost_USE_STATIC_LIBS ON)
 elseif (UNIX)
-    # use dynamic boost libraries .dll
+    # use shared boost libraries
     set(Boost_USE_STATIC_LIBS OFF)
 endif()
 
@@ -32,7 +32,11 @@ endif()
 file(GLOB HEADERS "*.h")
 
 add_executable(Test "./test.cpp" ${HEADERS})
-target_compile_features(Test PRIVATE cxx_std_11)
+set_target_properties(Test PROPERTIES
+    CXX_STANDARD 11
+    CXX_STANDARD_REQUIRED YES
+    CXX_EXTENSIONS NO
+)
 target_include_directories(Test PRIVATE ../../src)
 if ((NOT MSVC) AND (NOT APPLE))
     target_compile_definitions(Test PRIVATE BOOST_TEST_DYN_LINK)
