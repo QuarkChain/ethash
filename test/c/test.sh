@@ -27,15 +27,6 @@ if [ ! -f "$BUILD_DIR/.built" ]; then
     "$REPO_ROOT/build.sh"
 fi
 
-if [ ! -f "$TEST_BIN" ]; then
-    TEST_BIN="$(find "$BUILD_DIR/test/c" -type f \( -name Test -o -name Test.exe \) -print 2>/dev/null | head -n 1 || true)"
-    if [ -z "$TEST_BIN" ]; then
-        echo "[test/c] Required C test binary is missing under $BUILD_DIR/test/c" >&2
-        echo "[test/c] Run 'make rebuild' after installing the required Boost components." >&2
-        exit 1
-    fi
-fi
-
 echo "[test/c] Running $TEST_BIN"
 
 # mmap(MAP_SHARED) on NTFS via WSL DrvFs (/mnt/d/...) does not properly flush

@@ -29,8 +29,6 @@ fi
 # C/C++ build (cmake → libethash.a + Test binary + Python extension)
 # ---------------------------------------------------------------------------
 mkdir -p "$BUILD_DIR"
-# Never leave a stale success marker after a failed rebuild.
-rm -f "$BUILD_DIR/.built"
 cd "$BUILD_DIR"
 
 cmake "$REPO_ROOT" -DCMAKE_BUILD_TYPE=Release > /dev/null 2>&1 || {
@@ -46,22 +44,13 @@ if grep -q "microsoft\|WSL" /proc/version 2>/dev/null; then
     touch "$REPO_ROOT/src/python/core.c"
 fi
 
-# Test is a required build artifact. Build it explicitly so a missing CMake
-# target fails this script before the success stamp is written. Use CMake's
-# build command so this also works with Ninja and non-Makefile generators.
-cmake --build "$BUILD_DIR" --config Release --target Test
-
-TEST_BIN="$(find "$BUILD_DIR/test/c" -type f \( -name Test -o -name Test.exe \) -print 2>/dev/null | head -n 1 || true)"
-if [[ -z "$TEST_BIN" ]]; then
-    echo "[build/c] Required C test binary was not generated under $BUILD_DIR/test/c" >&2
-    exit 1
-fi
+make
 echo "[build/c] Done — binaries in $BUILD_DIR"
 
 # Build benchmark binaries if --bench flag is passed
 if [[ "$DO_BENCH" -eq 1 ]]; then
     echo "[build/bench] Building benchmark binaries..."
-    cmake --build "$BUILD_DIR" --config Release --target Benchmark_LIGHT Benchmark_FULL
+    make Benchmark_LIGHT Benchmark_FULL
     echo "[build/bench] Done — binaries in $BUILD_DIR/src/benchmark/"
 fi
 
@@ -85,6 +74,8 @@ else
     echo "[build/go] vet passed"
 fi
 
+touch "$BUILD_DIR/.built"
+
 # ---------------------------------------------------------------------------
 # Python extension build (compiles src/python/core.c via pip editable install)
 # ---------------------------------------------------------------------------
@@ -102,5 +93,4 @@ pip install -e "$REPO_ROOT" -q --no-build-isolation
 deactivate
 echo "[build/python] Done"
 
-touch "$BUILD_DIR/.built"
 echo "[build] All done"

@@ -6,39 +6,6 @@
 For details on this project, please see the Ethereum wiki:
 https://github.com/ethereum/wiki/wiki/Ethash
 
-## Building
-
-The C test suite requires CMake, a C/C++ compiler, and the Boost filesystem,
-system, and unit test framework components. Missing components cause the build
-to fail during CMake configuration rather than silently skipping the tests.
-
-On Ubuntu/Debian:
-
-```sh
-sudo apt update
-sudo apt install -y cmake build-essential libboost-test-dev \
-    libboost-filesystem-dev libboost-system-dev python3-venv python3-dev
-```
-
-On macOS with Homebrew:
-
-```sh
-brew install cmake boost python@3.13
-```
-
-If using a versioned, keg-only Boost formula, expose its prefix to CMake:
-
-```sh
-export BOOST_ROOT="$(brew --prefix boost@1.85)"
-```
-
-Then build and run all tests:
-
-```sh
-make rebuild
-make test-all
-```
-
 ### Coding Style for C++ code:
 
 Follow the same exact style as in [cpp-ethereum](https://github.com/ethereum/cpp-ethereum/blob/develop/CodingStandards.txt)

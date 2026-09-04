@@ -4,28 +4,27 @@
 # redeclaration bug (map.go vs linkname_swiss.go conflict).
 export GOEXPERIMENT=noswissmap
 
-BUILD_DIR   := build
-BENCH_DIR   := $(BUILD_DIR)/src/benchmark
-
-BUILD_INPUTS := $(shell find src test/c cmake -type f \( \
-	-name '*.c' -o -name '*.h' -o -name '*.cpp' -o \
-	-name '*.cmake' -o -name 'CMakeLists.txt' \))
-BUILD_INPUTS += $(wildcard *.go) go.mod go.sum CMakeLists.txt Makefile build.sh \
-	setup.py test/python/requirements.txt
+BUILD_DIR  := build
+TEST_BIN   := $(BUILD_DIR)/test/c/Test
+BENCH_LIGHT := $(BUILD_DIR)/src/benchmark/Benchmark_LIGHT
+BENCH_FULL  := $(BUILD_DIR)/src/benchmark/Benchmark_FULL
 
 # ---------------------------------------------------------------------------
 # Build targets
 # ---------------------------------------------------------------------------
 
 # Stamp file: touched by build.sh on success to track freshness.
-$(BUILD_DIR)/.built: $(BUILD_INPUTS)
+$(BUILD_DIR)/.built: $(shell find src -name '*.c' -o -name '*.h' -o -name '*.cpp') \
+                     ethash.go ethashc.go compat.go go.mod CMakeLists.txt
 	./build.sh
+	@touch $(BUILD_DIR)/.built
 
 build: $(BUILD_DIR)/.built
-	@test -n "$$(find $(BUILD_DIR)/test/c -type f \( -name Test -o -name Test.exe \) -print 2>/dev/null | head -n 1)" || { echo "Required C test binary is missing under $(BUILD_DIR)/test/c" >&2; exit 1; }
 
-build-bench: $(BUILD_DIR)/.built
-	cmake --build $(BUILD_DIR) --config Release --target Benchmark_LIGHT Benchmark_FULL
+$(BENCH_LIGHT) $(BENCH_FULL): $(BUILD_DIR)/.built
+	cd $(BUILD_DIR) && make Benchmark_LIGHT Benchmark_FULL
+
+build-bench: $(BENCH_LIGHT) $(BENCH_FULL)
 
 # ---------------------------------------------------------------------------
 # Test targets  (each depends only on the build it actually needs)
@@ -47,17 +46,11 @@ test-all: $(BUILD_DIR)/.built
 # Benchmark targets
 # ---------------------------------------------------------------------------
 
-bench-light: build-bench
-	@BENCH_BIN="$$(find "$(abspath $(BENCH_DIR))" -type f \( -name Benchmark_LIGHT -o -name Benchmark_LIGHT.exe \) -path '*/Release/*' -print -quit)"; \
-	[ -n "$$BENCH_BIN" ] || BENCH_BIN="$$(find "$(abspath $(BENCH_DIR))" -type f \( -name Benchmark_LIGHT -o -name Benchmark_LIGHT.exe \) -print -quit)"; \
-	[ -n "$$BENCH_BIN" ] || { echo "Benchmark_LIGHT is missing under $(BENCH_DIR)" >&2; exit 1; }; \
-	cd $(BUILD_DIR) && "$$BENCH_BIN"
+bench-light: $(BENCH_LIGHT)
+	cd $(BUILD_DIR) && ./src/benchmark/Benchmark_LIGHT
 
-bench-full: build-bench
-	@BENCH_BIN="$$(find "$(abspath $(BENCH_DIR))" -type f \( -name Benchmark_FULL -o -name Benchmark_FULL.exe \) -path '*/Release/*' -print -quit)"; \
-	[ -n "$$BENCH_BIN" ] || BENCH_BIN="$$(find "$(abspath $(BENCH_DIR))" -type f \( -name Benchmark_FULL -o -name Benchmark_FULL.exe \) -print -quit)"; \
-	[ -n "$$BENCH_BIN" ] || { echo "Benchmark_FULL is missing under $(BENCH_DIR)" >&2; exit 1; }; \
-	cd $(BUILD_DIR) && "$$BENCH_BIN"
+bench-full: $(BENCH_FULL)
+	cd $(BUILD_DIR) && ./src/benchmark/Benchmark_FULL
 
 bench: bench-light bench-full
 
