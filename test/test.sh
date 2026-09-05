@@ -33,9 +33,6 @@ echo -e "\n################# Testing Python ##################"
 
 echo -e "\n################# Testing Go ##################"
 cd "$REPO_ROOT"
-# GOEXPERIMENT=noswissmap: Go 1.24 has a CGo+Swiss-map bug where map.go and
-# linkname_swiss.go both get compiled, causing "redeclared" runtime errors.
-# Disabling Swiss maps avoids the conflict until the Go toolchain is fixed.
-GOEXPERIMENT=noswissmap go test -timeout 9999s
+go test -timeout 9999s
 
 echo -e "\n################# All tests passed ##################"
