@@ -62,15 +62,13 @@ cd "$REPO_ROOT"
 if [ ! -f go.mod ]; then
     echo "[build/go] go.mod not found, skipping Go build"
 else
-    # GOEXPERIMENT=noswissmap: workaround for Go 1.24 CGo + Swiss-map
-    # runtime redeclaration bug (map.go vs linkname_swiss.go conflict).
     echo "[build/go] Building Go package..."
-    GOEXPERIMENT=noswissmap go build ./...
+    go build ./...
     echo "[build/go] Done"
 
     # Verify the package compiles cleanly with vet as well
     echo "[build/go] Running go vet..."
-    GOEXPERIMENT=noswissmap go vet ./...
+    go vet ./...
     echo "[build/go] vet passed"
 fi
 

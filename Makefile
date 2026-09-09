@@ -1,9 +1,5 @@
 .PHONY: all build rebuild build-bench test-all test-c test-python test-go bench bench-light bench-full clean
 
-# GOEXPERIMENT=noswissmap: workaround for Go 1.24 CGo+Swiss-map runtime
-# redeclaration bug (map.go vs linkname_swiss.go conflict).
-export GOEXPERIMENT=noswissmap
-
 BUILD_DIR  := build
 TEST_BIN   := $(BUILD_DIR)/test/c/Test
 BENCH_LIGHT := $(BUILD_DIR)/src/benchmark/Benchmark_LIGHT
@@ -37,7 +33,7 @@ test-python:
 	./test/python/test.sh
 
 test-go: $(BUILD_DIR)/.built
-	GOEXPERIMENT=noswissmap go test -timeout 9999s
+	go test -timeout 9999s
 
 test-all: $(BUILD_DIR)/.built
 	./test/test.sh
